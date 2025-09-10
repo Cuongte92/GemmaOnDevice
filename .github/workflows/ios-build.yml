@@ -1,31 +1,40 @@
 name: iOS Build
+
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
-  build:
+  ios:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Xcode version
         run: xcodebuild -version
 
-      - name: Install CocoaPods (optional)
+      # CocoaPods (nếu có Podfile => cd vào GemmaOnDevice rồi install)
+      - name: Install CocoaPods
         run: |
-          if [ -f mediapipe-samples/examples/llm_inference/ios/Podfile ]; then
-            cd mediapipe-samples/examples/llm_inference/ios
+          sudo gem install cocoapods --no-document
+          if [ -f GemmaOnDevice/Podfile ]; then
+            cd GemmaOnDevice
             pod install
           fi
 
+      # ===== Giải mã file ký từ secrets =====
       - name: Decode signing files
+        id: decode
+        shell: bash
         run: |
-          echo "${{ secrets.IOS_P12_BASE64 }}" | base64 --decode > signing.p12
+          echo "${{ secrets.IOS_P12_BASE64 }}"      | base64 --decode > signing.p12
           echo "${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}" | base64 --decode > profile.mobileprovision
 
       - name: Setup keychain
+        shell: bash
         run: |
           security create-keychain -p "" build.keychain
           security default-keychain -s build.keychain
@@ -35,55 +44,95 @@ jobs:
 
       - name: Install provisioning profile
         id: install_profile
+        shell: bash
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          UUID=$(/usr/libexec/PlistBuddy -c Print:UUID /dev/stdin <<< "$(/usr/bin/security cms -D -i profile.mobileprovision)")
-          NAME=$(/usr/libexec/PlistBuddy -c Print:Name /dev/stdin <<< "$(/usr/bin/security cms -D -i profile.mobileprovision)")
-          echo "UUID=$UUID" >> $GITHUB_OUTPUT
-          echo "NAME=$NAME" >> $GITHUB_OUTPUT
+          /usr/bin/security cms -D -i profile.mobileprovision > profile.plist
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' profile.plist)
+          NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' profile.plist)
+          echo "uuid=$UUID" >> $GITHUB_OUTPUT
+          echo "name=$NAME"  >> $GITHUB_OUTPUT
           cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
 
-      - name: Prepare archive script
-        run: chmod +x .github/workflows/patch-archive.sh
-
+      # ===== Archive =====
       - name: Archive
         env:
-          TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
-          BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
-          PROFILE_SPECIFIER: ${{ steps.install_profile.outputs.NAME }}
+          PROJECT_PATH: GemmaOnDevice/InferenceExample.xcodeproj
+          WORKSPACE_PATH: GemmaOnDevice/InferenceExample.xcworkspace
+          SCHEME: InferenceExample
+          CONFIG: Release
+          ARCHIVE_PATH: ${{ runner.temp }}/build/App.xcarchive
+          DEVELOPMENT_TEAM: ${{ secrets.IOS_TEAM_ID }}
+          PRODUCT_BUNDLE_IDENTIFIER: ${{ secrets.IOS_BUNDLE_ID }}
+          PROVISIONING_PROFILE_SPECIFIER: ${{ steps.install_profile.outputs.name }}
+        shell: bash
         run: |
-          bash .github/workflows/patch-archive.sh
+          set -euo pipefail
+          # Nếu đã có .xcworkspace (sau pod install) thì build từ workspace
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild archive \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -configuration "$CONFIG" \
+              -sdk iphoneos \
+              -destination "generic/platform=iOS" \
+              -archivePath "$ARCHIVE_PATH" \
+              DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+              PRODUCT_BUNDLE_IDENTIFIER="$PRODUCT_BUNDLE_IDENTIFIER" \
+              PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_SPECIFIER" \
+              clean archive | xcpretty
+          else
+            # Build từ .xcodeproj
+            if [ ! -f "$PROJECT_PATH" ]; then
+              echo "❌ PROJECT_PATH='$PROJECT_PATH' không tồn tại. Kiểm tra lại đường dẫn."
+              exit 66
+            fi
+            xcodebuild archive \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -configuration "$CONFIG" \
+              -sdk iphoneos \
+              -destination "generic/platform=iOS" \
+              -archivePath "$ARCHIVE_PATH" \
+              DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+              PRODUCT_BUNDLE_IDENTIFIER="$PRODUCT_BUNDLE_IDENTIFIER" \
+              PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_SPECIFIER" \
+              clean archive | xcpretty
+          fi
 
+      # ===== ExportOptions + Export IPA =====
       - name: Create export options
+        shell: bash
         run: |
-          cat > ExportOptions.plist <<'PLIST'
+          cat > ExportOptions.plist <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
-          <dict>
-            <key>method</key><string>ad-hoc</string>
-            <key>teamID</key><string>${{ secrets.IOS_TEAM_ID }}</string>
-            <key>signingStyle</key><string>manual</string>
-            <key>provisioningProfiles</key>
             <dict>
-              <key>${{ secrets.IOS_BUNDLE_ID }}</key>
-              <string>${{ steps.install_profile.outputs.NAME }}</string>
+              <key>method</key><string>ad-hoc</string>
+              <key>teamID</key><string>${{ secrets.IOS_TEAM_ID }}</string>
+              <key>signingStyle</key><string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                <key>${{ secrets.IOS_BUNDLE_ID }}</key>
+                <string>${{ steps.install_profile.outputs.name }}</string>
+              </dict>
+              <key>compileBitcode</key><false/>
+              <key>stripSwiftSymbols</key><true/>
             </dict>
-            <key>compileBitcode</key><false/>
-            <key>stripSwiftSymbols</key><true/>
-          </dict>
           </plist>
           PLIST
 
       - name: Export IPA
+        shell: bash
         run: |
           xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/build/App.xcarchive" \
-            -exportPath "$RUNNER_TEMP/build" \
+            -archivePath "${{ runner.temp }}/build/App.xcarchive" \
+            -exportPath "${{ runner.temp }}/build" \
             -exportOptionsPlist ExportOptions.plist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GemmaOnDevice-IPA
+          name: ios-ipa
           path: ${{ runner.temp }}/build/*.ipa
