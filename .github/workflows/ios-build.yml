@@ -59,43 +59,24 @@ jobs:
 
 - name: Archive
   env:
-    # b    SCHEME: InferenceExample
-    CONFIGURATION: Release
+    PROJECT_PATH: ios/InferenceExample.xcodeproj
+    SCHEME: InferenceExample
+    CONFIG: Release
     ARCHIVE_PATH: ${{ runner.temp }}/build/App.xcarchive
   run: |
     set -euo pipefail
 
     if [ ! -e "${PROJECT_PATH}" ]; then
-      echo "build PROJECT_PATH='${PROJECT_PATH}' not found"; exit 66
-    fi
-
-    # Na:?u lC  .xcodeproj thC, dC9ng -project, na:?u lC  .xcworkspace thC, dC9ng -workspace
-    if [[ "${PROJECT_PATH}" == *.xcworkspace ]]; then
-      xcodebuild \
-        -workspace "${PROJECT_PATH}" \
-        -scheme "${SCHEME}" \
-        -configuration "${CONFIGURATION}" \
-        -sdk iphoneos \
-        -destination 'generic/platform=iOS' \
-        -archivePath "${ARCHIVE_PATH}" \
-        clean archive | xcpretty
-    else
-      xcodebuild \
-        -project "${PROJECT_PATH}" \
-        -scheme "${SCHEME}" \
-        -configuration "${CONFIGURATION}" \
-        -sdk iphoneos \
-        -destination 'generic/platform=iOS' \
-        -archivePath "${ARCHIVE_PATH}" \
-        clean archive | xcpretty
+      echo "build PROJECT_PATH='${PROJECT_PATH}' not found"
+      exit 66
     fi
 
     xcodebuild \
-      -workspace "${PROJECT_PATH}" \
+      -project "${PROJECT_PATH}" \
       -scheme "${SCHEME}" \
-      -configuration "${CONFIGURATION}" \
+      -configuration "${CONFIG}" \
       -sdk iphoneos \
-      -destination generic/platform=iOS \
+      -destination 'generic/platform=iOS' \
       -archivePath "${ARCHIVE_PATH}" \
       clean archive | xcpretty
 
