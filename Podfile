@@ -2,8 +2,8 @@ platform :ios, '15.0'
 use_frameworks!
 inhibit_all_warnings!
 
-project 'mediapipe-samples/examples/llm_inference/ios/LLMInferenceExample.xcodeproj'
+project 'ios/InferenceExample.xcodeproj'
 
-target 'LLMInferenceExample' do
+target 'InferenceExample' do
   pod 'MediaPipeTasksGenAI'
 end
