@@ -2,9 +2,8 @@ platform :ios, '15.0'
 use_frameworks!
 inhibit_all_warnings!
 
-# Trỏ đúng file .xcodeproj (đường dẫn tương đối từ gốc repo)
-project 'ios/LLMInferenceExample/LLMInferenceExample.xcodeproj'
+project 'mediapipe-samples/examples/llm_inference/ios/LLMInferenceExample.xcodeproj'
 
 target 'LLMInferenceExample' do
-  pod 'MediaPipeTasksGenAI'   # thư viện GenAI của MediaPipe
+  pod 'MediaPipeTasksGenAI'
 end
