@@ -8,21 +8,104 @@ on:
 jobs:
   build:
     runs-on: macos-13
+    env:
+      PROJECT_NAME: GemmaOnDevice   # D      SCHEME: GemmaOnDevice         # D      CONFIG: Release
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Xcode version
+        run: xcodebuild -version
+
       - name: Install CocoaPods
         run: |
-          sudo gem install cocoapods --no-doc
+          sudo gem install cocoapods --no-document
           pod repo update
-          pod install --project-directory=.
 
-      - name: Build
+      - name: Pod install (if Podfile exists)
         run: |
-          xcodebuild -workspace GemmaOnDevice.xcworkspace \
-            -scheme GemmaOnDevice \
-            -sdk iphoneos \
-            -configuration Release \
-            build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+          if [ -f Podfile ]; then
+            pod install
+            echo "WORKSPACE=${{ env.PROJECT_NAME }}.xcworkspace" >> $GITHUB_ENV
+          else
+            echo "WORKSPACE=" >> $GITHUB_ENV
+          fi
+
+      # === Decode signing files from secrets ===
+      - name: Decode signing files
+        run: |
+          echo "$CERTIFICATE_P12"      | base64 --decode > signing.p12
+          echo "$PROVISIONING_PROFILE" | base64 --decode > profile.mobileprovision
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
+
+      - name: Setup keychain
+        run: |
+          security create-keychain -p "" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import signing.p12 -k build.keychain -P "${{ secrets.P12_PASSWORD }}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
+
+      - name: Install provisioning profile
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          PROFILE_UUID=$(grep -a -A1 UUID profile.mobileprovision | tail -n1 | sed -e 's/^[[:space:]]*<string>//' -e 's/<\/string>.*$//')
+          cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+
+      - name: Archive
+        run: |
+          set -e
+          if [ -n "$WORKSPACE" ]; then
+            xcodebuild archive \
+              -workspace "$WORKSPACE" \
+              -scheme "${SCHEME}" \
+              -configuration "${CONFIG}" \
+              -archivePath build/${SCHEME}.xcarchive \
+              DEVELOPMENT_TEAM="${{ secrets.TEAM_ID }}" \
+              PRODUCT_BUNDLE_IDENTIFIER="${{ secrets.BUNDLE_ID }}" \
+              CODE_SIGN_STYLE=Manual \
+              PROVISIONING_PROFILE_SPECIFIER="" \
+              -allowProvisioningUpdates \
+              -quiet
+          else
+            xcodebuild archive \
+              -project "${PROJECT_NAME}.xcodeproj" \
+              -scheme "${SCHEME}" \
+              -configuration "${CONFIG}" \
+              -archivePath build/${SCHEME}.xcarchive \
+              DEVELOPMENT_TEAM="${{ secrets.TEAM_ID }}" \
+              PRODUCT_BUNDLE_IDENTIFIER="${{ secrets.BUNDLE_ID }}" \
+              CODE_SIGN_STYLE=Manual \
+              PROVISIONING_PROFILE_SPECIFIER="" \
+              -allowProvisioningUpdates \
+              -quiet
+          fi
+
+      - name: Create export options
+        run: |
+          cat > ExportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>compileBitcode</key><false/>
+            <key>method</key><string>development</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>teamID</key><string>${{ secrets.TEAM_ID }}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ secrets.BUNDLE_ID }}</key><string>${{ env.PROFILE_UUID }}</string>
+            </dict>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Export IPA
+        run: |
+ 
