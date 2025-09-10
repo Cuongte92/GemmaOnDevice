@@ -1,0 +1,28 @@
+name: iOS Build (GemmaOnDevice)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CocoaPods
+        run: |
+          sudo gem install cocoapods --no-doc
+          pod repo update
+          pod install --project-directory=.
+
+      - name: Build
+        run: |
+          xcodebuild -workspace GemmaOnDevice.xcworkspace \
+            -scheme GemmaOnDevice \
+            -sdk iphoneos \
+            -configuration Release \
+            build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
