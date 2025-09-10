@@ -59,16 +59,35 @@ jobs:
 
 - name: Archive
   env:
-    PROJECT_PATH: GemmaOnDevice/InferenceExample.xcworkspace
-    SCHEME: InferenceExample
+    # b    SCHEME: InferenceExample
     CONFIGURATION: Release
-    ARCHIVE_PATH: ${{ runner.temp }}/build/GemmaOnDevice.xcarchive
+    ARCHIVE_PATH: ${{ runner.temp }}/build/App.xcarchive
   run: |
     set -euo pipefail
 
-    if [ -f "${PROJECT_PATH}" ]; then
-      echo "b      echo "build PROJECT_PATH=${PROJECT_PATH} not found!"
-      exit 66
+    if [ ! -e "${PROJECT_PATH}" ]; then
+      echo "build PROJECT_PATH='${PROJECT_PATH}' not found"; exit 66
+    fi
+
+    # Na:?u lC  .xcodeproj thC, dC9ng -project, na:?u lC  .xcworkspace thC, dC9ng -workspace
+    if [[ "${PROJECT_PATH}" == *.xcworkspace ]]; then
+      xcodebuild \
+        -workspace "${PROJECT_PATH}" \
+        -scheme "${SCHEME}" \
+        -configuration "${CONFIGURATION}" \
+        -sdk iphoneos \
+        -destination 'generic/platform=iOS' \
+        -archivePath "${ARCHIVE_PATH}" \
+        clean archive | xcpretty
+    else
+      xcodebuild \
+        -project "${PROJECT_PATH}" \
+        -scheme "${SCHEME}" \
+        -configuration "${CONFIGURATION}" \
+        -sdk iphoneos \
+        -destination 'generic/platform=iOS' \
+        -archivePath "${ARCHIVE_PATH}" \
+        clean archive | xcpretty
     fi
 
     xcodebuild \
