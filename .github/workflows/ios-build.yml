@@ -1,109 +1,87 @@
-name: build
+name: iOS Build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
 
 jobs:
   ios:
-    runs-on: macos-latest
+    runs-on: macos-14
+
+    env:
+      CONFIGURATION: Release
+      ARCHIVE_PATH: ${{ github.workspace }}/build/App.xcarchive
+      EXPORT_PATH:  ${{ github.workspace }}/build/ipa
+      KEYCHAIN: build.keychain
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Xcode version
-        run: |
-          xcodebuild -version
+        run: xcodebuild -version
 
       - name: Install CocoaPods
-        run: sudo gem install cocoapods --no-document
+        run: |
+          sudo gem install cocoapods --no-document
+          pod install --project-directory=mediapipe-samples/examples/llm_inference/ios
 
       - name: Pod install (if Podfile exists)
         run: |
-          if [ -f "Podfile" ]; then
-            pod install --repo-update
+          if [ -f Podfile ]; then
+            pod install
           fi
 
       - name: Decode signing files
         run: |
-          echo -n "${{ secrets.P12_BASE64 }}" | base64 --decode > cert.p12
-          echo -n "${{ secrets.PROFILE_BASE64 }}" | base64 --decode > profile.mobileprovision
+          echo "${{ secrets.CERTIFICATE_P12 }}" | base64 --decode > certificate.p12
+          echo "${{ secrets.PROVISIONING_PROFILE }}" | base64 --decode > profile.mobileprovision
 
       - name: Setup keychain
         run: |
-          security create-keychain -p "" build.keychain
-          security import cert.p12 -k build.keychain -P "${{ secrets.P12_PASSWORD }}" -T /usr/bin/codesign
-          security list-keychains -s build.keychain login.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "" build.keychain
-          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+          security create-keychain -p "" $KEYCHAIN
+          security import certificate.p12 -k $KEYCHAIN -P "${{ secrets.P12_PASSWORD }}" -T /usr/bin/codesign
+          security list-keychains -s $KEYCHAIN
+          security unlock-keychain -p "" $KEYCHAIN
 
       - name: Install provisioning profile
         run: |
-          UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin <<< $(/usr/bin/security cms -D -i profile.mobileprovision))
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          cp profile.mobileprovision "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
-
-      - name: Detect project/workspace & scheme
-        id: detect
-        run: |
-          set -euo pipefail
-          WS=$(ls -1 *.xcworkspace 2>/dev/null | head -n1 || true)
-          PROJ=$(ls -1 *.xcodeproj 2>/dev/null | head -n1 || true)
-          if [ -n "$WS" ]; then
-            echo "kind=workspace" >> $GITHUB_OUTPUT
-            echo "path=$WS"       >> $GITHUB_OUTPUT
-            LIST=$(/usr/bin/xcodebuild -workspace "$WS" -list -json)
-          elif [ -n "$PROJ" ]; then
-            echo "kind=project"   >> $GITHUB_OUTPUT
-            echo "path=$PROJ"     >> $GITHUB_OUTPUT
-            LIST=$(/usr/bin/xcodebuild -project "$PROJ" -list -json)
-          else
-            echo "No .xcworkspace or .xcodeproj found"; exit 1
-          fi
-          SCHEME="${SCHEME_OVERRIDE:-}"
-          if [ -z "$SCHEME" ]; then
-            SCHEME=$(echo "$LIST" | /usr/bin/python3 - <<'PY'
-import sys,json
-d=json.load(sys.stdin)
-c=d.get('project') or d.get('workspace') or {}
-s=c.get('schemes') or []
-print(s[0] if s else "")
-PY
-)
-          fi
-          [ -n "$SCHEME" ] || { echo "No shared scheme found"; exit 1; }
-          echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
-          echo "Detected scheme: $SCHEME"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
 
       - name: Archive
         run: |
-          set -e
-          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
-            xcodebuild -workspace "${{ steps.detect.outputs.path }}" -scheme "${{ steps.detect.outputs.scheme }}" -configuration Release -sdk iphoneos -archivePath $PWD/build/App.xcarchive clean archive | xcpretty
-          else
-            xcodebuild -project   "${{ steps.detect.outputs.path }}" -scheme "${{ steps.detect.outputs.scheme }}" -configuration Release -sdk iphoneos -archivePath $PWD/build/App.xcarchive clean archive | xcpretty
-          fi
+          xcodebuild clean archive \
+            -workspace mediapipe-samples/examples/llm_inference/ios/LLMInferenceExample.xcworkspace \
+            -scheme LLMInferenceExample \
+            -configuration $CONFIGURATION \
+            -archivePath $ARCHIVE_PATH \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=${{ secrets.TEAM_ID }} \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_IDENTITY="Apple Distribution"
 
       - name: Create export options
         run: |
-          cat > ExportOptions.plist <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>method</key><string>app-store</string>
-            <key>signingStyle</key><string>manual</string>
-            <key>stripSwiftSymbols</key><true/>
-            <key>compileBitcode</key><false/>
-          </dict></plist>
+          cat <<PLIST > ExportOptions.plist
+          {
+            "method": "ad-hoc",
+            "signingStyle": "manual",
+            "teamID": "${{ secrets.TEAM_ID }}"
+          }
           PLIST
 
       - name: Export IPA
         run: |
           xcodebuild -exportArchive \
-            -archivePath $PWD/build/App.xcarchive \
+            -archivePath $ARCHIVE_PATH \
             -exportOptionsPlist ExportOptions.plist \
-            -exportPath $PWD/build | xcpretty
+            -exportPath $EXPORT_PATH
 
-      - name: Post Checkout
- 	if: always()
-        run: rm -f cert.p12 profile.mobileprovision  
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GemmaOnDevice-ipa
+          path: ${{ github.workspace }}/build/ipa
