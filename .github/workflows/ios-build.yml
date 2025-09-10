@@ -1,5 +1,4 @@
 name: iOS Build
-
 on:
   push:
     branches: [ "main" ]
@@ -9,59 +8,82 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Xcode version
-      run: xcodebuild -version
+      - name: Xcode version
+        run: xcodebuild -version
 
-    - name: Install CocoaPods
-      run: pod install --project-directory=mediapipe-samples/examples/llm_inference/ios
+      - name: Install CocoaPods (optional)
+        run: |
+          if [ -f mediapipe-samples/examples/llm_inference/ios/Podfile ]; then
+            cd mediapipe-samples/examples/llm_inference/ios
+            pod install
+          fi
 
-    - name: Archive
-      env:
-        PROJECT_PATH: mediapipe-samples/examples/llm_inference/ios/InferenceExample.xcodeproj
-        SCHEME: InferenceExample
-        CONFIG: Release
-        ARCHIVE_PATH: ${{ runner.temp }}/build/App.xcarchive
-      run: |
-        set -euo pipefail
+      - name: Decode signing files
+        run: |
+          echo "${{ secrets.IOS_P12_BASE64 }}" | base64 --decode > signing.p12
+          echo "${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}" | base64 --decode > profile.mobileprovision
 
-        if [ ! -e "${PROJECT_PATH}" ]; then
-          echo "❌ PROJECT_PATH='${PROJECT_PATH}' not found"
-          exit 66
-        fi
+      - name: Setup keychain
+        run: |
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import signing.p12 -k build.keychain -P "${{ secrets.IOS_P12_PASSWORD }}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
 
-        xcodebuild \
-          -project "${PROJECT_PATH}" \
-          -scheme "${SCHEME}" \
-          -configuration "${CONFIG}" \
-          -sdk iphoneos \
-          -destination 'generic/platform=iOS' \
-          -archivePath "${ARCHIVE_PATH}" \
-          clean archive | xcpretty
+      - name: Install provisioning profile
+        id: install_profile
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          UUID=$(/usr/libexec/PlistBuddy -c Print:UUID /dev/stdin <<< "$(/usr/bin/security cms -D -i profile.mobileprovision)")
+          NAME=$(/usr/libexec/PlistBuddy -c Print:Name /dev/stdin <<< "$(/usr/bin/security cms -D -i profile.mobileprovision)")
+          echo "UUID=$UUID" >> $GITHUB_OUTPUT
+          echo "NAME=$NAME" >> $GITHUB_OUTPUT
+          cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
 
-    - name: Create export options
-      run: |
-        cat > ExportOptions.plist <<EOF2
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>method</key><string>ad-hoc</string>
-          <key>teamID</key><string>${{ secrets.IOS_TEAM_ID }}</string>
-          <key>signingStyle</key><string>manual</string>
-          <key>provisioningProfiles</key>
+      - name: Prepare archive script
+        run: chmod +x .github/workflows/patch-archive.sh
+
+      - name: Archive
+        env:
+          TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
+          PROFILE_SPECIFIER: ${{ steps.install_profile.outputs.NAME }}
+        run: |
+          bash .github/workflows/patch-archive.sh
+
+      - name: Create export options
+        run: |
+          cat > ExportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
           <dict>
-            <key>${{ secrets.IOS_BUNDLE_ID }}</key>
-            <string>${{ steps.install_profile.outputs.UUID }}</string>
+            <key>method</key><string>ad-hoc</string>
+            <key>teamID</key><string>${{ secrets.IOS_TEAM_ID }}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ secrets.IOS_BUNDLE_ID }}</key>
+              <string>${{ steps.install_profile.outputs.NAME }}</string>
+            </dict>
+            <key>compileBitcode</key><false/>
+            <key>stripSwiftSymbols</key><true/>
           </dict>
-        </dict>
-        </plist>
-        EOF2
+          </plist>
+          PLIST
 
-    - name: Export IPA
-      run: |
-        xcodebuild -exportArchive \
-          -archivePath ${{ runner.temp }}/build/App.xcarchive \
-          -exportPath ${{ runner.temp }}/build \
-          -exportOptionsPlist ExportOptions.plist
+      - name: Export IPA
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/build/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/build" \
+            -exportOptionsPlist ExportOptions.plist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GemmaOnDevice-IPA
+          path: ${{ runner.temp }}/build/*.ipa
