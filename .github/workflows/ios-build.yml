@@ -57,17 +57,28 @@ jobs:
           echo "NAME=$NAME" >> $GITHUB_OUTPUT
           cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
 
-      - name: Archive
-        run: |
-          set -e
-          xcodebuild \
-            -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$ARCHIVE_PATH" \
-            clean archive | xcpretty
+- name: Archive
+  env:
+    PROJECT_PATH: GemmaOnDevice/InferenceExample.xcworkspace
+    SCHEME: InferenceExample
+    CONFIGURATION: Release
+    ARCHIVE_PATH: ${{ runner.temp }}/build/GemmaOnDevice.xcarchive
+  run: |
+    set -euo pipefail
+
+    if [ -f "${PROJECT_PATH}" ]; then
+      echo "b      echo "build PROJECT_PATH=${PROJECT_PATH} not found!"
+      exit 66
+    fi
+
+    xcodebuild \
+      -workspace "${PROJECT_PATH}" \
+      -scheme "${SCHEME}" \
+      -configuration "${CONFIGURATION}" \
+      -sdk iphoneos \
+      -destination generic/platform=iOS \
+      -archivePath "${ARCHIVE_PATH}" \
+      clean archive | xcpretty
 
       - name: Create export options
         run: |
